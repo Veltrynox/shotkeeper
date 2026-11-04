@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ShotKeeper</title>
+<style>
+  :root{--bg:#16181c;--panel:#1e2127;--line:#2e333b;--text:#e6e8eb;--mute:#8b929c;--acc:#4da3ff;--danger:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel)}
+  header h1{font-size:15px;margin:0;font-weight:600}
+  #status{margin-left:auto;margin-right:4px;font-size:12px;color:var(--mute)}
+  #status.err{color:var(--danger)}
+  main{flex:1;display:flex;min-height:0}
+  aside{width:280px;border-right:1px solid var(--line);display:flex;flex-direction:column;background:var(--panel)}
+  aside .tools{padding:10px;display:flex;gap:6px}
+  input,select,textarea,button{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px}
+  input:focus,select:focus,textarea:focus{outline:1px solid var(--acc);border-color:var(--acc)}
+  button{cursor:pointer}
+  button:hover{border-color:var(--acc)}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#04121f;font-weight:600}
+  #search{flex:1;min-width:0}
+  #list{flex:1;overflow:auto}
+  .item{padding:9px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;align-items:center;gap:8px}
+  .item:hover{background:#252932}
+  .item.sel{background:#243447;border-left:3px solid var(--acc);padding-left:11px}
+  .item .code{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .cnt{font-size:11px;color:var(--mute)}
+  .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  section{flex:1;overflow:auto;padding:20px 28px}
+  #detail>*{max-width:760px}
+  .empty{color:var(--mute);margin-top:60px;text-align:center}
+  .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px}
+  label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute);margin-bottom:3px}
+  .grid input,.grid select,.full{width:100%}
+  .code-in{font-size:20px;font-weight:600;width:100%;margin-bottom:14px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute);margin:22px 0 8px}
+  .note{background:#3a3522;border:1px solid #5c5230;border-radius:8px;padding:10px 12px;margin-bottom:8px}
+  .note .meta{display:flex;font-size:11px;color:var(--mute);margin-bottom:4px;gap:10px}
+  .note .meta{align-items:center}
+  .note .meta .x{margin-left:auto;cursor:pointer;font-size:20px;line-height:1;padding:2px 8px;border-radius:4px}
+  .note .meta .x:hover{color:var(--danger)}
+  .note .txt{white-space:pre-wrap;outline:none;min-height:1.4em;color:#f3ecd2;font-size:15px}
+  .note .meta{color:#a89c66}
+  .note .meta .x:hover{color:var(--danger)}
+  .add{display:flex;gap:8px;align-items:flex-start}
+  .add textarea{flex:1;min-height:64px;resize:vertical}
+  .del{margin-top:30px;color:var(--danger)}
+</style>
+</head>
+<body>
+<header>
+  <h1>🎬 ShotKeeper</h1>
+  <span id="status">loading…</span>
+  <button id="openBtn">Open</button>
+  <button id="saveBtn">Save</button>
+  <input type="file" id="importFile" accept=".json" hidden>
+</header>
+<main>
+  <aside>
+    <div class="tools">
+      <input id="search" placeholder="Search shots & notes…">
+      <button class="primary" id="newShot" title="New shot">+</button>
+    </div>
+    <div id="list"></div>
+  </aside>
+  <section id="detail"></section>
+</main>
+
+<script>
+let data = {shots:[]};
+let selId = null;
+const GENERAL = "__general";
+const $ = s => document.querySelector(s);
+const uid = () => Math.random().toString(36).slice(2,10);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+// ---------- persistence ----------
+let fileHandle = null, dirty = false;
+const canFS = "showSaveFilePicker" in window;
+function setStatus(t, err){ const s=$("#status"); s.textContent=t; s.className = err ? "err" : ""; }
+function markDirty(){
+  dirty = true;
+  try{ localStorage.setItem("shotkeeper", JSON.stringify(data)); }catch(e){}  // safety backup
+  $("#saveBtn").classList.add("primary");
+  setStatus("● unsaved changes");
+}
+function save(){ markDirty(); }
+function normalize(){
+  if(!data || !Array.isArray(data.shots)) data = {shots:[]};
+  if(typeof data.general === "string") data.general = {notes: data.general.trim() ? [{id:uid(),text:data.general,ts:Date.now()}] : []};
+  data.general ||= {}; data.general.notes ||= [];
+  data.shots.forEach(s => { s.id ||= uid(); s.notes ||= []; s.code ??= ""; delete s.description; });
+}
+async function saveFile(){
+  const text = JSON.stringify(data,null,2);
+  try{
+    if(canFS){
+      if(!fileHandle) fileHandle = await showSaveFilePicker({suggestedName:"shots.json",types:[{description:"JSON",accept:{"application/json":[".json"]}}]});
+      const w = await fileHandle.createWritable(); await w.write(text); await w.close();
+      setStatus("✓ saved to "+fileHandle.name);
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([text],{type:"application/json"}));
+      a.download = "shots.json"; a.click();
+      setStatus("✓ downloaded shots.json");
+    }
+    dirty = false; $("#saveBtn").classList.remove("primary");
+  }catch(e){ if(e.name!=="AbortError") setStatus("⚠ save failed: "+e.message, true); }
+}
+async function openFile(){
+  try{
+    let text;
+    if(canFS){
+      [fileHandle] = await showOpenFilePicker({types:[{description:"JSON",accept:{"application/json":[".json"]}}]});
+      text = await (await fileHandle.getFile()).text();
+    } else { $("#importFile").click(); return; }
+    loadText(text, fileHandle.name);
+  }catch(e){ if(e.name!=="AbortError") setStatus("⚠ open failed: "+e.message, true); }
+}
+function loadText(text, name){
+  try{ data = JSON.parse(text); }catch(_){ return alert("That doesn't look like a ShotKeeper JSON file."); }
+  normalize(); selId = GENERAL; dirty = false; $("#saveBtn").classList.remove("primary");
+  render(); setStatus("✓ opened "+name);
+}
+function load(){
+  try{ data = JSON.parse(localStorage.getItem("shotkeeper")); }catch(_){ data = null; }
+  normalize(); selId = GENERAL; render();
+  setStatus(data.shots.length || data.general.notes.length ? "restored from browser backup — click Save to write a file" : "new project — click Save to create shots.json");
+}
+
+// ---------- rendering ----------
+const cur = () => selId===GENERAL ? data.general : data.shots.find(s => s.id === selId);
+
+function renderList(){
+  const q = $("#search").value.trim().toLowerCase();
+  const shots = data.shots.filter(s => !q ||
+    [s.code,...s.notes.map(n=>n.text)].join(" ").toLowerCase().includes(q));
+  $("#list").innerHTML = `
+    <div class="item ${selId===GENERAL?"sel":""}" data-id="${GENERAL}"><span class="code">📌 General notes</span><span class="cnt">${data.general.notes.length?data.general.notes.length+" 📝":""}</span></div>` +
+    (shots.map(s => `
+    <div class="item ${s.id===selId?"sel":""}" data-id="${s.id}">
+      <span class="code">${esc(s.code)||"(untitled)"}</span>
+      <span class="cnt">${s.notes.length?s.notes.length+" 📝":""}</span>
+    </div>`).join("") || `<div class="empty" style="margin-top:20px">No shots</div>`);
+}
+
+function renderDetail(){
+  const s = cur(), isG = selId===GENERAL;
+  if(!s){ $("#detail").innerHTML = `<div class="empty">No shot selected.<br>Click <b>+</b> to add one.</div>`; return; }
+  $("#detail").innerHTML = `
+    ${isG ? `<h2 style="margin-top:0">General project notes</h2>` : `<input class="code-in" id="f_code" placeholder="Shot code e.g. AB_0120" value="${esc(s.code)}">
+    <h2>Notes (${s.notes.length})</h2>`}
+    <div class="add">
+      <textarea id="newNote" placeholder="${isG ? "General note: client prefs, paths, deadlines, contacts…" : "Write a note…"} (Ctrl/Cmd+Enter to add)"></textarea>
+      <button class="primary" id="addNote">Add</button>
+    </div>
+    <div id="notes" style="margin-top:12px">
+      ${s.notes.map(n=>`
+        <div class="note" data-nid="${n.id}">
+          <div class="meta"><span>${new Date(n.ts).toLocaleString()}</span><span class="x" title="Delete note">✕</span></div>
+          <div class="txt" contenteditable="plaintext-only">${esc(n.text)}</div>
+        </div>`).join("")}
+    </div>
+    ${isG ? "" : `<button class="del" id="delShot">Delete shot</button>`}`;
+}
+function render(){ renderList(); renderDetail(); }
+
+// ---------- events ----------
+$("#search").oninput = renderList;
+$("#newShot").onclick = () => {
+  const s = {id:uid(),code:"",notes:[]};
+  data.shots.unshift(s); selId = s.id; $("#search").value=""; render(); $("#f_code").focus(); save();
+};
+$("#list").onclick = e => {
+  const it = e.target.closest(".item"); if(!it) return;
+  selId = it.dataset.id; render();
+};
+$("#detail").addEventListener("input", e => {
+  const s = cur(); if(!s) return;
+  const id = e.target.id;
+  if(id && id.startsWith("f_")){
+    s[id.slice(2)] = e.target.value; save();
+    if(id==="f_code") renderList();
+  } else if(e.target.classList.contains("txt")){
+    const n = s.notes.find(n => n.id === e.target.closest(".note").dataset.nid);
+    if(n){ n.text = e.target.textContent; save(); }
+  }
+});
+function addNote(){
+  const s = cur(), t = $("#newNote").value.trim(); if(!s||!t) return;
+  s.notes.unshift({id:uid(),text:t,ts:Date.now()});
+  save(); render(); $("#newNote").focus();
+}
+$("#detail").addEventListener("click", e => {
+  const s = cur(); if(!s) return;
+  if(e.target.id==="addNote") addNote();
+  if(e.target.classList.contains("x")){
+    const nid = e.target.closest(".note").dataset.nid;
+    s.notes = s.notes.filter(n => n.id !== nid); save(); render();
+  }
+  if(e.target.id==="delShot" && confirm(`Delete shot "${s.code||"(untitled)"}" and its notes?`)){
+    data.shots = data.shots.filter(x => x.id !== s.id);
+    selId = data.shots[0]?.id ?? null; save(); render();
+  }
+});
+$("#detail").addEventListener("keydown", e => {
+  if(e.target.id==="newNote" && e.key==="Enter" && (e.metaKey||e.ctrlKey)) addNote();
+});
+$("#saveBtn").onclick = saveFile;
+$("#openBtn").onclick = openFile;
+$("#importFile").onchange = async e => {
+  const f = e.target.files[0]; if(f) loadText(await f.text(), f.name);
+  e.target.value = "";
+};
+addEventListener("keydown", e => { if((e.metaKey||e.ctrlKey) && e.key==="s"){ e.preventDefault(); saveFile(); } });
+addEventListener("beforeunload", e => { if(dirty){ e.preventDefault(); e.returnValue=""; } });
+
+load();
+</script>
+</body>
+</html>
