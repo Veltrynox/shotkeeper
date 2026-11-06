@@ -29,6 +29,10 @@
   .item.sel{background:#243447;border-left:3px solid var(--acc);padding-left:11px}
   .item .code{font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .item .cnt{font-size:11px;color:var(--mute)}
+  .item.done .code{text-decoration:line-through;color:var(--mute)}
+  .item.done{opacity:.6}
+  .done-tog{display:flex;align-items:center;gap:8px;margin:-6px 0 14px;font-size:13px;text-transform:none;letter-spacing:0;color:var(--text);cursor:pointer;width:max-content}
+  .done-tog input{width:auto;margin:0}
   .dot{width:9px;height:9px;border-radius:50%;flex:none}
   section{flex:1;overflow:auto;padding:20px 28px}
   #detail>*{max-width:760px}
@@ -49,6 +53,23 @@
   .add{display:flex;gap:8px;align-items:flex-start}
   .add textarea{flex:1;min-height:64px;resize:vertical}
   .del{margin-top:30px;color:var(--danger)}
+  #logpane{width:270px;border-right:0;border-left:1px solid var(--line)}
+  #logpane h3{margin:0;padding:12px 14px 4px;font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute)}
+  #logTotal{padding:0 14px 8px;font-size:12px;color:var(--mute);border-bottom:1px solid var(--line)}
+  #logList{flex:1;overflow:auto}
+  .day{padding:8px 14px 4px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--mute);background:var(--bg)}
+  .le{padding:8px 14px;border-bottom:1px solid var(--line);cursor:pointer;display:flex;gap:8px;align-items:center}
+  .le:hover{background:#252932}
+  .le .t{flex:1;min-width:0}
+  .le .c{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .le .m{font-size:11px;color:var(--mute)}
+  .le .d{font-weight:600;color:var(--acc);font-variant-numeric:tabular-nums}
+  .le .x{color:var(--mute);cursor:pointer;padding:0 4px}
+  .le .x:hover{color:var(--danger)}
+  .le.run{background:#243447;border-left:3px solid var(--acc)}
+  .timer{display:flex;align-items:center;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+  .timer .big{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;min-width:64px}
+  .timer .tot{font-size:12px;color:var(--mute);margin-left:auto}
 </style>
 </head>
 <body>
@@ -69,6 +90,11 @@
     <div id="list"></div>
   </aside>
   <section id="detail"></section>
+  <aside id="logpane">
+    <h3>⏱ Activity log</h3>
+    <div id="logTotal"></div>
+    <div id="logList"></div>
+  </aside>
 </main>
 
 <script>
@@ -94,6 +120,8 @@ function normalize(){
   if(!data || !Array.isArray(data.shots)) data = {shots:[]};
   if(typeof data.general === "string") data.general = {notes: data.general.trim() ? [{id:uid(),text:data.general,ts:Date.now()}] : []};
   data.general ||= {}; data.general.notes ||= [];
+  if(!Array.isArray(data.log)) data.log = [];
+  if(!data.timer || !data.timer.start) data.timer = null;
   data.shots.forEach(s => { s.id ||= uid(); s.notes ||= []; s.code ??= ""; delete s.description; });
 }
 async function saveFile(){
@@ -139,12 +167,13 @@ const cur = () => selId===GENERAL ? data.general : data.shots.find(s => s.id ===
 function renderList(){
   const q = $("#search").value.trim().toLowerCase();
   const shots = data.shots.filter(s => !q ||
-    [s.code,...s.notes.map(n=>n.text)].join(" ").toLowerCase().includes(q));
+    [s.code,...s.notes.map(n=>n.text)].join(" ").toLowerCase().includes(q))
+    .sort((a,b) => !!a.done - !!b.done);  // done shots sink to the bottom (stable)
   $("#list").innerHTML = `
     <div class="item ${selId===GENERAL?"sel":""}" data-id="${GENERAL}"><span class="code">📌 General notes</span><span class="cnt">${data.general.notes.length?data.general.notes.length+" 📝":""}</span></div>` +
     (shots.map(s => `
-    <div class="item ${s.id===selId?"sel":""}" data-id="${s.id}">
-      <span class="code">${esc(s.code)||"(untitled)"}</span>
+    <div class="item ${s.id===selId?"sel":""} ${s.done?"done":""}" data-id="${s.id}">
+      <span class="code">${s.done?"✓ ":""}${esc(s.code)||"(untitled)"}</span>
       <span class="cnt">${s.notes.length?s.notes.length+" 📝":""}</span>
     </div>`).join("") || `<div class="empty" style="margin-top:20px">No shots</div>`);
 }
@@ -153,7 +182,9 @@ function renderDetail(){
   const s = cur(), isG = selId===GENERAL;
   if(!s){ $("#detail").innerHTML = `<div class="empty">No shot selected.<br>Click <b>+</b> to add one.</div>`; return; }
   $("#detail").innerHTML = `
-    ${isG ? `<h2 style="margin-top:0">General project notes</h2>` : `<input class="code-in" id="f_code" placeholder="Shot code e.g. AB_0120" value="${esc(s.code)}">
+    ${isG ? `<h2 style="margin-top:0">General project notes</h2><div class="timer" id="timerBox"></div>` : `<input class="code-in" id="f_code" placeholder="Shot code e.g. AB_0120" value="${esc(s.code)}">
+    <label class="done-tog"><input type="checkbox" id="f_done" ${s.done?"checked":""}> Mark as done</label>
+    <div class="timer" id="timerBox"></div>
     <h2>Notes (${s.notes.length})</h2>`}
     <div class="add">
       <textarea id="newNote" placeholder="${isG ? "General note: client prefs, paths, deadlines, contacts…" : "Write a note…"} (Ctrl/Cmd+Enter to add)"></textarea>
@@ -167,8 +198,71 @@ function renderDetail(){
         </div>`).join("")}
     </div>
     ${isG ? "" : `<button class="del" id="delShot">Delete shot</button>`}`;
+  renderTimerBox();
 }
-function render(){ renderList(); renderDetail(); }
+function render(){ renderList(); renderDetail(); renderLog(); }
+
+// ---------- timer & activity log ----------
+const codeOf = id => id===GENERAL ? "General notes" : (data.shots.find(s=>s.id===id)?.code || "(untitled)");
+const fmtClock = ms => { const t=Math.max(0,Math.ceil(ms/1000)), h=Math.floor(t/3600), m=Math.floor(t%3600/60), s=t%60;
+  return (h?h+":"+String(m).padStart(2,"0"):m)+":"+String(s).padStart(2,"0"); };
+const fmtDur = ms => { const m=Math.round(ms/60000); if(m<1) return Math.round(ms/1000)+"s";
+  return m>=60 ? Math.floor(m/60)+"h "+(m%60?m%60+"m":"") : m+"m"; };
+const dayKey = ts => new Date(ts).toDateString();
+function beep(){
+  try{ const c=new AudioContext(), o=c.createOscillator(), g=c.createGain();
+    o.connect(g); g.connect(c.destination); o.frequency.value=880; g.gain.value=.15;
+    o.start(); o.stop(c.currentTime+.5); }catch(e){}
+}
+function startTimer(min){
+  if(data.timer) finishTimer(false);
+  data.timer = {shotId:selId, start:Date.now(), dur:min*60000};
+  save(); tick(); renderLog();
+}
+function finishTimer(completed){
+  const t = data.timer; if(!t) return;
+  const ms = completed ? t.dur : Math.min(Date.now()-t.start, t.dur);
+  data.timer = null;
+  if(ms >= 1000) data.log.unshift({id:uid(), shotId:t.shotId, code:codeOf(t.shotId), ms, planned:t.dur, ts:Date.now(), done:completed});
+  save(); renderLog(); renderTimerBox(); document.title="ShotKeeper";
+  if(completed){ beep(); setStatus("⏱ "+fmtDur(ms)+" logged on "+codeOf(t.shotId)); }
+}
+function renderTimerBox(){
+  const box = $("#timerBox"); if(!box) return;
+  const t = data.timer, mine = t && t.shotId===selId;
+  const total = data.log.filter(l=>l.shotId===selId).reduce((a,l)=>a+l.ms,0);
+  box.innerHTML = (mine
+    ? `<span class="big" id="tbig">${fmtClock(t.dur-(Date.now()-t.start))}</span><button id="tstop">Stop &amp; log</button>`
+    : `<button data-start="20">▶ 20 min</button><button data-start="40">▶ 40 min</button>`)
+    + (t && !mine ? `<span class="m" style="font-size:12px;color:var(--mute)">timer running on ${esc(codeOf(t.shotId))}</span>` : "")
+    + (total ? `<span class="tot">Total logged: ${fmtDur(total)}</span>` : "");
+}
+function renderLog(){
+  const t = data.timer;
+  const today = dayKey(Date.now());
+  const tot = data.log.filter(l=>dayKey(l.ts)===today).reduce((a,l)=>a+l.ms,0);
+  $("#logTotal").textContent = "Today: "+(tot?fmtDur(tot):"0m")+" · "+data.log.length+" sessions";
+  let html = t ? `<div class="le run" data-id="${t.shotId}"><div class="t"><div class="c">${esc(codeOf(t.shotId))}</div><div class="m">running…</div></div><span class="d" id="runClock">${fmtClock(t.dur-(Date.now()-t.start))}</span></div>` : "";
+  let lastDay = null;
+  html += data.log.map(l => {
+    const dk = dayKey(l.ts), hdr = dk!==lastDay ? `<div class="day">${dk===today?"Today":dk}</div>` : "";
+    lastDay = dk;
+    return hdr + `<div class="le" data-id="${l.shotId}" data-lid="${l.id}"><div class="t"><div class="c">${esc(data.shots.find(s=>s.id===l.shotId)?.code || l.code)}</div>
+      <div class="m">${new Date(l.ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}${l.done?"":" · stopped early"}</div></div>
+      <span class="d">${fmtDur(l.ms)}</span><span class="x" title="Delete entry">✕</span></div>`;
+  }).join("");
+  $("#logList").innerHTML = html || `<div class="empty" style="margin-top:30px;padding:0 14px">No activity yet.<br>Start a timer on a shot.</div>`;
+}
+function tick(){
+  const t = data.timer; if(!t) return;
+  const left = t.dur-(Date.now()-t.start);
+  if(left<=0){ finishTimer(true); return; }
+  const c = fmtClock(left);
+  $("#tbig") && ($("#tbig").textContent = c);
+  $("#runClock") && ($("#runClock").textContent = c);
+  document.title = c+" · "+codeOf(t.shotId);
+}
+setInterval(tick, 1000);
 
 // ---------- events ----------
 $("#search").oninput = renderList;
@@ -184,7 +278,8 @@ $("#detail").addEventListener("input", e => {
   const s = cur(); if(!s) return;
   const id = e.target.id;
   if(id && id.startsWith("f_")){
-    s[id.slice(2)] = e.target.value; save();
+    s[id.slice(2)] = id==="f_done" ? e.target.checked : e.target.value; save();
+    if(id==="f_done") renderList();
     if(id==="f_code") renderList();
   } else if(e.target.classList.contains("txt")){
     const n = s.notes.find(n => n.id === e.target.closest(".note").dataset.nid);
@@ -198,6 +293,8 @@ function addNote(){
 }
 $("#detail").addEventListener("click", e => {
   const s = cur(); if(!s) return;
+  if(e.target.dataset.start) startTimer(+e.target.dataset.start);
+  if(e.target.id==="tstop") finishTimer(false);
   if(e.target.id==="addNote") addNote();
   if(e.target.classList.contains("x")){
     const nid = e.target.closest(".note").dataset.nid;
@@ -211,6 +308,13 @@ $("#detail").addEventListener("click", e => {
 $("#detail").addEventListener("keydown", e => {
   if(e.target.id==="newNote" && e.key==="Enter" && (e.metaKey||e.ctrlKey)) addNote();
 });
+$("#logList").onclick = e => {
+  const row = e.target.closest(".le"); if(!row) return;
+  if(e.target.classList.contains("x")){
+    data.log = data.log.filter(l => l.id !== row.dataset.lid); save(); renderLog(); renderTimerBox(); return;
+  }
+  if(row.dataset.id==GENERAL || data.shots.some(s=>s.id===row.dataset.id)){ selId=row.dataset.id; render(); }
+};
 $("#saveBtn").onclick = saveFile;
 $("#openBtn").onclick = openFile;
 $("#importFile").onchange = async e => {
@@ -220,7 +324,7 @@ $("#importFile").onchange = async e => {
 addEventListener("keydown", e => { if((e.metaKey||e.ctrlKey) && e.key==="s"){ e.preventDefault(); saveFile(); } });
 addEventListener("beforeunload", e => { if(dirty){ e.preventDefault(); e.returnValue=""; } });
 
-load();
+load(); tick();
 </script>
 </body>
 </html>
